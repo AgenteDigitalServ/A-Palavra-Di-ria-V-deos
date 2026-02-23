@@ -193,26 +193,40 @@ export default function App() {
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setVideoFile(file);
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
-      
-      // If there's a selected verse, update history with this video
-      if (selectedVerse) {
-        const videoId = `vid_${Date.now()}`;
-        await saveVideoToDB(videoId, file);
+      // Check duration
+      const tempVideo = document.createElement('video');
+      tempVideo.preload = 'metadata';
+      tempVideo.onloadedmetadata = async () => {
+        window.URL.revokeObjectURL(tempVideo.src);
+        const duration = tempVideo.duration;
         
-        const newHistoryItem: HistoryItem = {
-          id: Date.now().toString(),
-          keyword: selectedVerse.reference,
-          timestamp: Date.now(),
-          verse: selectedVerse,
-          videoId: videoId
-        };
-        setHistory(prev => [newHistoryItem, ...prev.slice(0, 19)]);
-        showToast('Vídeo salvo no histórico!');
-      }
+        if (duration < 10) {
+          showToast('O vídeo deve ter pelo menos 10 segundos.');
+          return;
+        }
+        
+        setVideoFile(file);
+        if (videoUrl) URL.revokeObjectURL(videoUrl);
+        const url = URL.createObjectURL(file);
+        setVideoUrl(url);
+        
+        // If there's a selected verse, update history with this video
+        if (selectedVerse) {
+          const videoId = `vid_${Date.now()}`;
+          await saveVideoToDB(videoId, file);
+          
+          const newHistoryItem: HistoryItem = {
+            id: Date.now().toString(),
+            keyword: selectedVerse.reference,
+            timestamp: Date.now(),
+            verse: selectedVerse,
+            videoId: videoId
+          };
+          setHistory(prev => [newHistoryItem, ...prev.slice(0, 19)]);
+          showToast('Vídeo salvo no histórico!');
+        }
+      };
+      tempVideo.src = URL.createObjectURL(file);
     }
   };
 
@@ -291,7 +305,7 @@ export default function App() {
     
     recorder.start();
 
-    const maxDuration = Math.min(video.duration, 30);
+    const maxDuration = Math.min(video.duration, 90);
 
     // Pre-calculate text layout once
     const fontSize = 42;
@@ -830,10 +844,10 @@ export default function App() {
                     <div className="col-span-2 p-4 bg-gold/10 rounded-xl border border-gold/30">
                       <p className="text-[10px] text-navy/80 leading-relaxed">
                         <strong className="text-navy uppercase block mb-1">Qualidade HD Ativada:</strong>
-                        • Vídeo em Alta Definição (720p).<br/>
+                        • Vídeo entre 10s e 1min 30s.<br/>
+                        • Resolução HD (720p).<br/>
                         • Compatível com Android e iOS.<br/>
-                        • Texto copiado automaticamente.<br/>
-                        • No iPhone, o vídeo abrirá em uma nova aba para salvar.
+                        • Texto copiado automaticamente.
                       </p>
                     </div>
                   </div>
