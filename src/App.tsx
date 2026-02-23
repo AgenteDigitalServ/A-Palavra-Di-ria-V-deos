@@ -276,9 +276,19 @@ export default function App() {
     };
 
     video.muted = true;
-    await video.play();
+    video.currentTime = 0;
     
-    // Start recording ONLY after video is playing to avoid capturing the play icon
+    // Wait for video to be ready and playing
+    await new Promise<void>((resolve) => {
+      const onPlaying = () => {
+        video.removeEventListener('playing', onPlaying);
+        // Small delay to ensure first frame is rendered without overlays
+        setTimeout(resolve, 150);
+      };
+      video.addEventListener('playing', onPlaying);
+      video.play().catch(resolve);
+    });
+    
     recorder.start();
 
     const maxDuration = Math.min(video.duration, 30);
@@ -694,7 +704,7 @@ export default function App() {
                   <video 
                     ref={videoRef}
                     src={videoUrl} 
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover pointer-events-none"
                     controls={false}
                     loop
                     muted
@@ -728,17 +738,7 @@ export default function App() {
                     )}
                   </AnimatePresence>
 
-                  {/* Video Controls Overlay */}
-                  <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button 
-                      onClick={() => videoRef.current?.paused ? videoRef.current.play() : videoRef.current?.pause()}
-                      className="bg-white/20 backdrop-blur-md p-3 rounded-full text-white hover:bg-gold hover:text-navy transition-all"
-                    >
-                      <div className="w-5 h-5 flex items-center justify-center">
-                        <div className="w-3 h-3 bg-current rounded-sm" />
-                      </div>
-                    </button>
-                  </div>
+                  {/* No manual controls to avoid any play symbols */}
                 </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-white/20 p-12 text-center">
