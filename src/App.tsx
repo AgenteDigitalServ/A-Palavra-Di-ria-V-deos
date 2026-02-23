@@ -32,7 +32,16 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // Initialize Gemini
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const getGenAI = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.warn("GEMINI_API_KEY is missing. Please set it in your environment variables.");
+    return null;
+  }
+  return new GoogleGenAI({ apiKey });
+};
+
+const genAI = getGenAI();
 
 interface Verse {
   reference: string;
@@ -143,6 +152,12 @@ export default function App() {
 
     setLoading(true);
     setVerses([]);
+    
+    if (!genAI) {
+      setLoading(false);
+      showToast("Erro: Chave API não configurada.");
+      return;
+    }
     
     try {
       const response = await genAI.models.generateContent({
@@ -438,6 +453,11 @@ export default function App() {
 
       {/* Header */}
       <header className="sacred-gradient text-white py-8 px-6 shadow-2xl border-b-2 border-gold/40">
+        {!genAI && (
+          <div className="bg-red-500/20 border border-red-500/50 text-red-200 text-[10px] py-1 text-center mb-4 rounded">
+            Atenção: Chave API não configurada. Configure GEMINI_API_KEY no ambiente.
+          </div>
+        )}
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-4">
             <div className="p-3 bg-gold/20 rounded-full border border-gold/50">
