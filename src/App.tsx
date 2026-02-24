@@ -274,13 +274,18 @@ export default function App() {
     
     const recorder = new MediaRecorder(stream, { 
       mimeType,
-      videoBitsPerSecond: 5000000 // 5 Mbps for high quality
+      videoBitsPerSecond: 8000000 // 8 Mbps for even higher quality
     });
     
     const chunks: Blob[] = [];
+    let renderTimeout: number;
 
-    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
     recorder.onstop = () => {
+      cancelAnimationFrame(renderTimeout);
       const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
       setRenderedBlob(blob);
       setIsRendering(false);
@@ -289,21 +294,44 @@ export default function App() {
       video.muted = true;
     };
 
+    recorder.onerror = (err) => {
+      console.error("Recorder error:", err);
+      setIsRendering(false);
+      showToast("Erro na gravação do vídeo.");
+    };
+
     video.muted = true;
     video.currentTime = 0;
+    video.playbackRate = 1.0; // Ensure normal speed for recording
     
     // Wait for video to be ready and playing
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        video.removeEventListener('playing', onPlaying);
+        reject(new Error("Video play timeout"));
+      }, 5000);
+
       const onPlaying = () => {
+        clearTimeout(timeout);
         video.removeEventListener('playing', onPlaying);
         // Small delay to ensure first frame is rendered without overlays
-        setTimeout(resolve, 150);
+        setTimeout(resolve, 200);
       };
       video.addEventListener('playing', onPlaying);
-      video.play().catch(resolve);
+      video.play().catch(err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    }).catch(err => {
+      console.error("Failed to start video:", err);
+      setIsRendering(false);
+      showToast("Erro ao iniciar o vídeo para renderização.");
+      return;
     });
     
-    recorder.start();
+    if (recorder.state === 'inactive') {
+      recorder.start();
+    }
 
     const maxDuration = Math.min(video.duration, 90);
 
@@ -331,18 +359,44 @@ export default function App() {
     const totalHeight = lines.length * lineHeight;
     const startY = (canvas.height - totalHeight) / 2;
 
+    let lastTime = -1;
+    let stuckCounter = 0;
+
     const renderFrame = () => {
       if (recorder.state === 'inactive') return;
 
+      // Check if we should stop
+      const isFinished = video.ended || video.currentTime >= maxDuration;
+      
+      // Safety check: if currentTime hasn't changed for 100 frames while not finished, force stop
+      if (video.currentTime === lastTime && !video.paused && !isFinished) {
+        stuckCounter++;
+        if (stuckCounter > 120) { // ~4 seconds at 30fps
+          console.warn("Rendering stuck, forcing stop.");
+          recorder.stop();
+          return;
+        }
+      } else {
+        stuckCounter = 0;
+      }
+      lastTime = video.currentTime;
+
+      // Update progress
       const progress = Math.min((video.currentTime / maxDuration) * 100, 100);
       setRenderProgress(Math.round(progress));
 
+      // Draw
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      // Overlay
       ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
       ctx.fillStyle = 'white';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
       
       ctx.shadowColor = 'rgba(0,0,0,0.9)';
       ctx.shadowBlur = 12;
@@ -369,8 +423,8 @@ export default function App() {
       ctx.lineTo(canvas.width / 2 + refWidth / 2 + 60, currentY + 40);
       ctx.stroke();
 
-      if (!video.paused && !video.ended && video.currentTime < maxDuration) {
-        requestAnimationFrame(renderFrame);
+      if (!isFinished) {
+        renderTimeout = requestAnimationFrame(renderFrame);
       } else {
         if (recorder.state === 'recording') {
           recorder.stop();
@@ -378,7 +432,7 @@ export default function App() {
       }
     };
 
-    renderFrame();
+    renderTimeout = requestAnimationFrame(renderFrame);
   };
 
   const showToast = (message: string) => {
@@ -843,10 +897,10 @@ export default function App() {
                     
                     <div className="col-span-2 p-4 bg-gold/10 rounded-xl border border-gold/30">
                       <p className="text-[10px] text-navy/80 leading-relaxed">
-                        <strong className="text-navy uppercase block mb-1">Qualidade HD Ativada:</strong>
+                        <strong className="text-navy uppercase block mb-1">Qualidade Ultra HD Ativada:</strong>
                         • Vídeo entre 10s e 1min 30s.<br/>
-                        • Resolução HD (720p).<br/>
-                        • Compatível com Android e iOS.<br/>
+                        • Bitrate de 8Mbps (Alta Qualidade).<br/>
+                        • Mantenha esta aba ativa durante a renderização.<br/>
                         • Texto copiado automaticamente.
                       </p>
                     </div>
