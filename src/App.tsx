@@ -256,7 +256,10 @@ export default function App() {
 
       tempVideo.onloadedmetadata = async () => {
         clearTimeout(timeoutId);
+        // Wait a bit to ensure duration is stable on some mobile browsers
+        await new Promise(r => setTimeout(r, 500));
         const duration = tempVideo.duration;
+        console.log("Duração detectada no upload:", duration);
         setVideoDuration(duration);
         cleanup();
         
@@ -492,12 +495,14 @@ export default function App() {
           const startY = (canvas.height - (lines.length * lineHeight)) / 2;
           const referenceText = selectedVerse!.reference.toUpperCase();
 
-          const maxDuration = 30;
+          const maxDuration = videoDuration > 0 ? videoDuration : 30;
+          console.log("Iniciando renderização com duração:", maxDuration);
           let renderStartTime = 0;
           let framesDrawn = 0;
           
           renderVideo.currentTime = 0;
-          renderVideo.loop = true;
+          // Only loop if we are forcing a duration longer than the video
+          renderVideo.loop = maxDuration > videoDuration + 0.5;
           
           await renderVideo.play().catch(async () => {
             renderVideo!.muted = true;
@@ -593,7 +598,7 @@ export default function App() {
       };
       startRenderingProcess();
     }
-  }, [showRenderOverlay, isRendering]);
+  }, [showRenderOverlay, isRendering, videoDuration]);
 
   const handleDownloadImage = async () => {
     if (!selectedVerse || !videoRef.current) return;
