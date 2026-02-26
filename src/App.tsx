@@ -328,8 +328,18 @@ export default function App() {
     }
   }, [renderedBlob, currentHistoryId]);
 
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [showRenderOverlay, setShowRenderOverlay] = useState(false);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setLogoUrl(url);
+      showToast("Logo carregada com sucesso!");
+    }
+  };
 
   const handleRender = () => {
     if (isRendering || !selectedVerse || !videoUrl) return;
@@ -348,6 +358,17 @@ export default function App() {
         try {
           if (!canvas) return;
 
+          // Load Logo if exists
+          let logoImg: HTMLImageElement | null = null;
+          if (logoUrl) {
+            logoImg = new Image();
+            logoImg.src = logoUrl;
+            await new Promise((resolve) => {
+              logoImg!.onload = resolve;
+              logoImg!.onerror = resolve;
+            });
+          }
+
           renderVideo = document.createElement('video');
           renderVideo.src = videoUrl!;
           renderVideo.muted = true;
@@ -361,8 +382,8 @@ export default function App() {
           const ctx = canvas.getContext('2d', { alpha: false });
           if (!ctx) throw new Error("Erro no motor gráfico.");
 
-          canvas.width = 540;
-          canvas.height = 960;
+          canvas.width = 1080;
+          canvas.height = 1920;
 
           if (renderVideo.readyState < 3) { 
             await new Promise((resolve) => {
@@ -411,7 +432,7 @@ export default function App() {
           try {
             recorder = new MediaRecorder(stream, { 
               mimeType: mimeType || undefined,
-              videoBitsPerSecond: 3000000 
+              videoBitsPerSecond: 6000000 
             });
           } catch (err) {
             throw new Error("Erro ao configurar o gravador de vídeo.");
@@ -448,9 +469,9 @@ export default function App() {
             setRenderProgress(0);
           };
 
-          const fontSize = 32;
+          const fontSize = 64;
           const lineHeight = fontSize * 1.3;
-          const maxWidth = canvas.width - 100;
+          const maxWidth = canvas.width - 200;
           ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
@@ -496,6 +517,17 @@ export default function App() {
               ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
               ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
               ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+              // Draw Logo
+              if (logoImg && logoImg.complete) {
+                const logoSize = 180;
+                const padding = 60;
+                ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                ctx.shadowBlur = 15;
+                ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, padding, logoSize, logoSize);
+                ctx.shadowBlur = 0;
+              }
+
               ctx.fillStyle = 'white';
               ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
               ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -507,19 +539,19 @@ export default function App() {
               });
               ctx.shadowBlur = 0;
               ctx.fillStyle = '#D4AF37';
-              ctx.font = 'bold 24px "Cinzel"';
-              ctx.fillText(referenceText, canvas.width / 2, currentY + 40);
+              ctx.font = 'bold 48px "Cinzel"';
+              ctx.fillText(referenceText, canvas.width / 2, currentY + 80);
               const refWidth = ctx.measureText(referenceText).width;
               ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
-              ctx.lineWidth = 3;
-              const lineY = currentY + 40;
+              ctx.lineWidth = 6;
+              const lineY = currentY + 80;
               const centerX = canvas.width / 2;
-              const offset = refWidth / 2 + 15;
+              const offset = refWidth / 2 + 30;
               ctx.beginPath();
-              ctx.moveTo(centerX - offset - 30, lineY);
+              ctx.moveTo(centerX - offset - 60, lineY);
               ctx.lineTo(centerX - offset, lineY);
               ctx.moveTo(centerX + offset, lineY);
-              ctx.lineTo(centerX + offset + 30, lineY);
+              ctx.lineTo(centerX + offset + 60, lineY);
               ctx.stroke();
             }
 
@@ -563,7 +595,7 @@ export default function App() {
     }
   }, [showRenderOverlay, isRendering]);
 
-  const handleDownloadImage = () => {
+  const handleDownloadImage = async () => {
     if (!selectedVerse || !videoRef.current) return;
     
     const canvas = document.createElement('canvas');
@@ -572,12 +604,33 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Load Logo if exists
+    let logoImg: HTMLImageElement | null = null;
+    if (logoUrl) {
+      logoImg = new Image();
+      logoImg.src = logoUrl;
+      await new Promise((resolve) => {
+        logoImg!.onload = resolve;
+        logoImg!.onerror = resolve;
+      });
+    }
+
     // Draw current video frame
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     
     // Overlay
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw Logo
+    if (logoImg && logoImg.complete) {
+      const logoSize = 240;
+      const padding = 100;
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 20;
+      ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, padding, logoSize, logoSize);
+      ctx.shadowBlur = 0;
+    }
     
     // Text
     const fontSize = 64;
@@ -1057,26 +1110,51 @@ export default function App() {
             <div className="glass-card rounded-2xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="font-display text-sm text-navy/80 tracking-widest uppercase">Configurações de Mídia</h3>
-                {videoUrl && (
-                  <div className="flex gap-4">
-                    <label className="text-xs text-gold hover:underline cursor-pointer font-bold uppercase tracking-tighter">
-                      Trocar Vídeo
-                      <input type="file" accept="video/*" onChange={handleVideoUpload} className="hidden" />
-                    </label>
-                    <button 
-                      onClick={() => {
-                        setVideoUrl(null);
-                        setVideoFile(null);
-                        setRenderedBlob(null);
-                        setVideoDuration(0);
-                      }}
-                      className="text-xs text-red-500 hover:underline font-bold uppercase tracking-tighter"
-                    >
-                      Remover
-                    </button>
-                  </div>
-                )}
+                <div className="flex gap-4">
+                  <label className="text-xs text-gold hover:underline cursor-pointer font-bold uppercase tracking-tighter flex items-center gap-1">
+                    <Upload className="w-3 h-3" />
+                    Logo Marca
+                    <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                  </label>
+                  {videoUrl && (
+                    <>
+                      <label className="text-xs text-gold hover:underline cursor-pointer font-bold uppercase tracking-tighter">
+                        Trocar Vídeo
+                        <input type="file" accept="video/*" onChange={handleVideoUpload} className="hidden" />
+                      </label>
+                      <button 
+                        onClick={() => {
+                          setVideoUrl(null);
+                          setVideoFile(null);
+                          setRenderedBlob(null);
+                          setVideoDuration(0);
+                        }}
+                        className="text-xs text-red-500 hover:underline font-bold uppercase tracking-tighter"
+                      >
+                        Remover
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
+
+              {logoUrl && (
+                <div className="flex items-center gap-3 p-3 bg-gold/5 rounded-xl border border-gold/20">
+                  <div className="w-10 h-10 rounded-full overflow-hidden border border-gold/30 bg-white">
+                    <img src={logoUrl} alt="Logo" className="w-full h-full object-contain" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[10px] font-bold text-navy/60 uppercase">Logo Ativa</p>
+                    <p className="text-[9px] text-navy/40">Sua logo aparecerá no topo dos vídeos gerados.</p>
+                  </div>
+                  <button 
+                    onClick={() => setLogoUrl(null)}
+                    className="p-1 hover:bg-red-50 rounded-full text-red-400 transition-colors"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 gap-4">
                 {!videoUrl ? (
