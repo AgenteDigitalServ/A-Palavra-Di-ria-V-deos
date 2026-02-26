@@ -328,268 +328,299 @@ export default function App() {
     }
   }, [renderedBlob, currentHistoryId]);
 
-  const handleRender = async () => {
+  const [showRenderOverlay, setShowRenderOverlay] = useState(false);
+  const renderCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const handleRender = () => {
     if (isRendering || !selectedVerse || !videoUrl) return;
-    
     setIsRendering(true);
+    setShowRenderOverlay(true);
     setRenderProgress(1); 
     setRenderedBlob(null);
+  };
 
-    let renderVideo: HTMLVideoElement | null = null;
-
-    try {
-      // Use a more reliable way to ensure the video is "active"
-      renderVideo = document.createElement('video');
-      renderVideo.src = videoUrl;
-      renderVideo.muted = true;
-      renderVideo.playsInline = true;
-      renderVideo.crossOrigin = "anonymous";
-      
-      // Make it "visible" enough to prevent throttling but out of the way
-      renderVideo.style.position = 'fixed';
-      renderVideo.style.top = '0';
-      renderVideo.style.left = '0';
-      renderVideo.style.width = '100px';
-      renderVideo.style.height = '100px';
-      renderVideo.style.opacity = '0.01';
-      renderVideo.style.zIndex = '-1';
-      renderVideo.style.pointerEvents = 'none';
-      document.body.appendChild(renderVideo);
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d', { alpha: false });
-      
-      if (!ctx) {
-        throw new Error("Erro no motor gráfico.");
-      }
-
-      canvas.width = 720;
-      canvas.height = 1280;
-
-      // Wait for video to be ready
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Tempo esgotado ao carregar vídeo")), 10000);
-        const onReady = () => {
-          clearTimeout(timeout);
-          renderVideo?.removeEventListener('loadedmetadata', onReady);
-          renderVideo?.removeEventListener('canplay', onReady);
-          resolve(null);
-        };
-        renderVideo?.addEventListener('loadedmetadata', onReady);
-        renderVideo?.addEventListener('canplay', onReady);
-        renderVideo?.load();
-      });
-
-      // Draw initial frame to ensure stream has data
-      ctx.fillStyle = 'black';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
-
-      let stream: MediaStream;
-      try {
-        stream = canvas.captureStream(24);
-      } catch (e) {
-        try {
-          stream = (canvas as any).captureStream();
-        } catch (e2) {
-          throw new Error("Captura não suportada.");
-        }
-      }
-      
-      const types = [
-        'video/mp4;codecs=h264,aac',
-        'video/mp4;codecs=h264',
-        'video/mp4',
-        'video/webm;codecs=h264', 
-        'video/webm',
-        'video/quicktime'
-      ];
-      const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
-      
-      let recorder: MediaRecorder;
-      try {
-        recorder = new MediaRecorder(stream, { 
-          mimeType,
-          videoBitsPerSecond: 1200000 
-        });
-      } catch (err) {
-        throw new Error("Erro no gravador.");
-      }
-      
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
-      };
-
-      recorder.onstop = async () => {
-        if (renderVideo && document.body.contains(renderVideo)) {
-          document.body.removeChild(renderVideo);
-        }
-        
-        if (chunks.length === 0) {
-          showToast("Falha ao gerar vídeo.");
-          setIsRendering(false);
-          return;
-        }
-
-        const blob = new Blob(chunks, { type: mimeType });
-        setRenderedBlob(blob);
-        
-        // Save rendered video to history
-        if (currentHistoryId) {
-          const renderedId = `rendered_${currentHistoryId}`;
-          const renderedFile = new File([blob], `palavra_${Date.now()}.mp4`, { type: mimeType });
-          await saveVideoToDB(renderedId, renderedFile);
-          setHistory(prev => prev.map(h => 
-            h.id === currentHistoryId ? { ...h, renderedVideoId: renderedId } : h
-          ));
-        }
-
-        setIsRendering(false);
-        setRenderProgress(0);
-      };
-
-      // Pre-calculate text layout
-      const fontSize = 42;
-      const lineHeight = fontSize * 1.4;
-      const maxWidth = canvas.width - 120;
-      ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      
-      const words = selectedVerse.text.split(' ');
-      let line = '';
-      const lines: string[] = [];
-      for (let n = 0; n < words.length; n++) {
-        let testLine = line + words[n] + ' ';
-        if (ctx.measureText(testLine).width > maxWidth && n > 0) {
-          lines.push(line.trim());
-          line = words[n] + ' ';
-        } else {
-          line = testLine;
-        }
-      }
-      lines.push(line.trim());
-      const startY = (canvas.height - (lines.length * lineHeight)) / 2;
-      const referenceText = selectedVerse.reference.toUpperCase();
-
-      // Start
-      renderVideo.currentTime = 0;
-      
-      const startPlayback = async () => {
-        try {
-          await renderVideo?.play();
-        } catch (e) {
-          if (renderVideo) renderVideo.muted = true;
-          await renderVideo?.play().catch(() => {
-            console.warn("Autoplay blocked");
-          });
-        }
-      };
-
-      await startPlayback();
-      recorder.start(200);
-
-      const maxDuration = Math.min(renderVideo.duration || videoDuration || 15, 60);
-      let lastTime = -1;
-      let stuckCounter = 0;
-      let frameCount = 0;
-      let animationFrameId: number;
-
-      const renderFrame = () => {
-        if (!isRendering || recorder.state !== 'recording') return;
-
-        frameCount++;
+  useEffect(() => {
+    if (showRenderOverlay && renderCanvasRef.current && isRendering && !renderedBlob) {
+      const startRenderingProcess = async () => {
+        let renderVideo: HTMLVideoElement | null = null;
+        let canvas: HTMLCanvasElement | null = renderCanvasRef.current;
 
         try {
-          const isFinished = (renderVideo?.ended) || (renderVideo && renderVideo.currentTime >= maxDuration);
+          if (!canvas) return;
+
+          renderVideo = document.createElement('video');
+          renderVideo.src = videoUrl!;
+          renderVideo.muted = true;
+          renderVideo.playsInline = true;
+          renderVideo.crossOrigin = "anonymous";
           
-          // Force play if paused or not started
-          if (renderVideo?.paused && !isFinished) {
-            renderVideo.play().catch(() => {});
+          try {
+            await document.fonts.ready;
+          } catch (e) {}
+
+          const ctx = canvas.getContext('2d', { alpha: false });
+          if (!ctx) throw new Error("Erro no motor gráfico.");
+
+          canvas.width = 540;
+          canvas.height = 960;
+
+          if (renderVideo.readyState < 3) { 
+            await new Promise((resolve) => {
+              const timeout = setTimeout(resolve, 10000);
+              const onReady = () => {
+                clearTimeout(timeout);
+                renderVideo?.removeEventListener('canplaythrough', onReady);
+                resolve(null);
+              };
+              renderVideo?.addEventListener('canplaythrough', onReady);
+              renderVideo?.load();
+            });
           }
 
-          // Kickstart if stuck at 0
-          if (frameCount > 20 && renderVideo && renderVideo.currentTime === 0 && !isFinished) {
-            renderVideo.currentTime = 0.1;
-            console.log("Kickstarting video...");
-          }
-
-          // Robust stuck detection & nudge
-          if (renderVideo && renderVideo.currentTime === lastTime && !renderVideo.paused && !isFinished) {
-            stuckCounter++;
-            if (stuckCounter > 60) { // ~1 second at 60fps
-              renderVideo.currentTime += 0.1;
-              stuckCounter = 0;
-              console.log("Nudging video...");
-            }
-          } else {
-            stuckCounter = 0;
-          }
-          lastTime = renderVideo?.currentTime || -1;
-
-          const progress = Math.max(1, Math.min(((renderVideo?.currentTime || 0) / maxDuration) * 100, 100));
-          setRenderProgress(Math.round(progress));
-
-          // Draw
-          if (renderVideo) {
-            ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
-          }
-          
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+          ctx.fillStyle = 'black';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
-          
-          ctx.fillStyle = 'white';
-          ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
-          ctx.shadowColor = 'rgba(0,0,0,0.8)';
-          ctx.shadowBlur = 6; 
-          
-          let currentY = startY;
-          lines.forEach((l) => {
-            ctx.fillText(`"${l}"`, canvas.width / 2, currentY + lineHeight / 2);
-            currentY += lineHeight;
-          });
-          
-          ctx.shadowBlur = 0;
-          ctx.fillStyle = '#D4AF37';
-          ctx.font = 'bold 28px "Cinzel"';
-          ctx.fillText(referenceText, canvas.width / 2, currentY + 40);
+          ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
 
-          const refWidth = ctx.measureText(referenceText).width;
-          ctx.strokeStyle = 'rgba(212, 175, 55, 0.7)';
-          ctx.lineWidth = 2;
-          const lineY = currentY + 40;
-          const centerX = canvas.width / 2;
-          const offset = refWidth / 2 + 15;
-          ctx.beginPath();
-          ctx.moveTo(centerX - offset - 45, lineY);
-          ctx.lineTo(centerX - offset, lineY);
-          ctx.moveTo(centerX + offset, lineY);
-          ctx.lineTo(centerX + offset + 45, lineY);
-          ctx.stroke();
-
-          if (!isFinished) {
-            animationFrameId = requestAnimationFrame(renderFrame);
-          } else {
-            setTimeout(() => { 
-              if (recorder.state === 'recording') recorder.stop(); 
-            }, 500);
+          let stream: MediaStream;
+          try {
+            stream = canvas.captureStream(30);
+          } catch (e) {
+            try {
+              stream = (canvas as any).captureStream();
+            } catch (e2) {
+              throw new Error("Seu dispositivo não suporta gravação de vídeo.");
+            }
           }
-        } catch (err) {
-          console.error("Frame render error", err);
-          if (recorder.state === 'recording') recorder.stop();
+          
+          const types = [
+            'video/mp4;codecs=h264,aac',
+            'video/mp4;codecs=h264',
+            'video/mp4',
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm;codecs=h264',
+            'video/webm'
+          ];
+          const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+          
+          if (!stream || stream.getTracks().length === 0) {
+            throw new Error("Falha ao iniciar o fluxo de vídeo.");
+          }
+          
+          let recorder: MediaRecorder;
+          try {
+            recorder = new MediaRecorder(stream, { 
+              mimeType: mimeType || undefined,
+              videoBitsPerSecond: 2500000 
+            });
+          } catch (err) {
+            throw new Error("Erro ao configurar o gravador de vídeo.");
+          }
+          
+          const chunks: Blob[] = [];
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+              chunks.push(e.data);
+            }
+          };
+
+          recorder.onstop = async () => {
+            setShowRenderOverlay(false);
+            if (chunks.length === 0) {
+              showToast("Falha na captura. Tente novamente.");
+              setIsRendering(false);
+              return;
+            }
+
+            const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+            setRenderedBlob(blob);
+            
+            if (currentHistoryId) {
+              const renderedId = `rendered_${currentHistoryId}`;
+              const renderedFile = new File([blob], `palavra_${Date.now()}.mp4`, { type: mimeType || 'video/webm' });
+              await saveVideoToDB(renderedId, renderedFile);
+              setHistory(prev => prev.map(h => 
+                h.id === currentHistoryId ? { ...h, renderedVideoId: renderedId } : h
+              ));
+            }
+
+            setIsRendering(false);
+            setRenderProgress(0);
+          };
+
+          const fontSize = 32;
+          const lineHeight = fontSize * 1.3;
+          const maxWidth = canvas.width - 100;
+          ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          const words = selectedVerse!.text.split(' ');
+          let line = '';
+          const lines: string[] = [];
+          for (let n = 0; n < words.length; n++) {
+            let testLine = line + words[n] + ' ';
+            if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+              lines.push(line.trim());
+              line = words[n] + ' ';
+            } else {
+              line = testLine;
+            }
+          }
+          lines.push(line.trim());
+          const startY = (canvas.height - (lines.length * lineHeight)) / 2;
+          const referenceText = selectedVerse!.reference.toUpperCase();
+
+          const maxDuration = 30;
+          let renderStartTime = 0;
+          let framesDrawn = 0;
+          
+          renderVideo.currentTime = 0;
+          renderVideo.loop = true;
+          
+          await renderVideo.play().catch(async () => {
+            renderVideo!.muted = true;
+            await renderVideo!.play();
+          });
+
+          let lastVideoTime = -1;
+          let lastCheckTime = Date.now();
+
+          const renderLoop = () => {
+            if (!isRendering) {
+              if (recorder && recorder.state !== 'inactive') recorder.stop();
+              return;
+            }
+
+            if (renderVideo && canvas && ctx) {
+              ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.fillStyle = 'white';
+              ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
+              ctx.shadowColor = 'rgba(0,0,0,0.8)';
+              ctx.shadowBlur = 6; 
+              let currentY = startY;
+              lines.forEach((l) => {
+                ctx.fillText(`"${l}"`, canvas.width / 2, currentY + lineHeight / 2);
+                currentY += lineHeight;
+              });
+              ctx.shadowBlur = 0;
+              ctx.fillStyle = '#D4AF37';
+              ctx.font = 'bold 24px "Cinzel"';
+              ctx.fillText(referenceText, canvas.width / 2, currentY + 40);
+              const refWidth = ctx.measureText(referenceText).width;
+              ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
+              ctx.lineWidth = 3;
+              const lineY = currentY + 40;
+              const centerX = canvas.width / 2;
+              const offset = refWidth / 2 + 15;
+              ctx.beginPath();
+              ctx.moveTo(centerX - offset - 30, lineY);
+              ctx.lineTo(centerX - offset, lineY);
+              ctx.moveTo(centerX + offset, lineY);
+              ctx.lineTo(centerX + offset + 30, lineY);
+              ctx.stroke();
+            }
+
+            framesDrawn++;
+            if (framesDrawn === 10 && recorder.state === 'inactive') {
+              renderStartTime = Date.now();
+              recorder.start(1000);
+            }
+
+            if (renderStartTime > 0) {
+              const now = Date.now();
+              const elapsedSeconds = (now - renderStartTime) / 1000;
+              if (now - lastCheckTime > 2000) {
+                if (renderVideo!.currentTime === lastVideoTime && elapsedSeconds < maxDuration) {
+                  renderVideo!.play().catch(() => {});
+                  renderVideo!.currentTime += 0.1;
+                }
+                lastVideoTime = renderVideo!.currentTime;
+                lastCheckTime = now;
+              }
+              if (elapsedSeconds >= maxDuration) {
+                setTimeout(() => {
+                  if (recorder && recorder.state !== 'inactive') recorder.stop();
+                }, 500);
+                return;
+              }
+              const progress = Math.max(1, Math.min((elapsedSeconds / maxDuration) * 100, 100));
+              setRenderProgress(Math.round(progress));
+            }
+            requestAnimationFrame(renderLoop);
+          };
+          renderLoop();
+        } catch (error: any) {
+          console.error("Render failed", error);
+          showToast(error.message || "Erro na renderização.");
+          setIsRendering(false);
+          setShowRenderOverlay(false);
         }
       };
+      startRenderingProcess();
+    }
+  }, [showRenderOverlay, isRendering]);
 
-      animationFrameId = requestAnimationFrame(renderFrame);
-    } catch (error: any) {
-      console.error("Render failed", error);
-      showToast(error.message || "Erro na renderização.");
-      setIsRendering(false);
-      if (renderVideo && document.body.contains(renderVideo)) {
-        document.body.removeChild(renderVideo);
+  const handleDownloadImage = () => {
+    if (!selectedVerse || !videoRef.current) return;
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1920;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Draw current video frame
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    
+    // Overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Text
+    const fontSize = 64;
+    const lineHeight = fontSize * 1.3;
+    const maxWidth = canvas.width - 200;
+    ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'white';
+    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.shadowBlur = 12;
+
+    const words = selectedVerse.text.split(' ');
+    let line = '';
+    const lines: string[] = [];
+    for (let n = 0; n < words.length; n++) {
+      let testLine = line + words[n] + ' ';
+      if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+        lines.push(line.trim());
+        line = words[n] + ' ';
+      } else {
+        line = testLine;
       }
     }
+    lines.push(line.trim());
+    
+    let currentY = (canvas.height - (lines.length * lineHeight)) / 2;
+    lines.forEach((l) => {
+      ctx.fillText(`"${l}"`, canvas.width / 2, currentY + lineHeight / 2);
+      currentY += lineHeight;
+    });
+    
+    // Reference
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#D4AF37';
+    ctx.font = 'bold 48px "Cinzel"';
+    ctx.fillText(selectedVerse.reference.toUpperCase(), canvas.width / 2, currentY + 80);
+
+    const link = document.createElement('a');
+    link.download = `palavra_diaria_${Date.now()}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    showToast("Imagem baixada com sucesso!");
   };
 
   const showToast = (message: string) => {
@@ -671,7 +702,46 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col font-sans selection:bg-gold/30">
-      {/* Toast Notification */}
+      {/* Full Screen Render Overlay */}
+      <AnimatePresence>
+        {showRenderOverlay && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[10000] bg-navy flex flex-col items-center justify-center p-6"
+          >
+            <div className="relative w-full max-w-[300px] aspect-[9/16] bg-black rounded-2xl overflow-hidden shadow-2xl border-2 border-gold/30 mb-8">
+              <canvas 
+                ref={renderCanvasRef}
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center text-white p-4 text-center">
+                <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin mb-4" />
+                <h3 className="font-display text-lg tracking-widest text-gold mb-2">GERANDO VÍDEO</h3>
+                <p className="text-xs opacity-70 mb-4">Mantenha esta tela aberta e o celular ligado.</p>
+                <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-gold"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${renderProgress}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-bold mt-2">{renderProgress}%</span>
+              </div>
+            </div>
+            <button 
+              onClick={() => {
+                setIsRendering(false);
+                setShowRenderOverlay(false);
+              }}
+              className="px-8 py-3 bg-white/10 hover:bg-white/20 rounded-full text-white text-xs uppercase tracking-widest transition-colors"
+            >
+              Cancelar Geração
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -1033,27 +1103,30 @@ export default function App() {
                         </p>
                       </div>
                     )}
-                    <button 
-                      disabled={!videoUrl || !selectedVerse || isRendering}
-                      onClick={handleRender}
-                      className="flex flex-col items-center justify-center gap-2 p-6 bg-navy text-white rounded-xl disabled:opacity-30 hover:bg-navy/90 transition-all shadow-lg hover:shadow-xl relative overflow-hidden w-full"
-                    >
-                      {isRendering ? (
-                        <>
-                          <div className="absolute inset-0 bg-gold/20" />
-                          <div 
-                            className="absolute bottom-0 left-0 h-1 bg-gold transition-all duration-300" 
-                            style={{ width: `${renderProgress}%` }}
-                          />
-                          <div className="w-6 h-6 border-2 border-gold border-t-transparent rounded-full animate-spin mb-1" />
-                          <span className="text-[10px] font-bold uppercase tracking-tighter">Renderizando {renderProgress}%</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-xs font-medium uppercase tracking-widest">Gerar Vídeo para Compartilhar</span>
-                        </>
-                      )}
-                    </button>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div 
+                        className={cn(
+                          "flex flex-col items-center justify-center gap-2 p-6 bg-navy text-white rounded-xl transition-all shadow-lg relative overflow-hidden w-full",
+                          (!videoUrl || !selectedVerse || isRendering) ? "opacity-50 cursor-not-allowed" : "hover:bg-navy/90 hover:shadow-xl cursor-pointer"
+                        )}
+                        onClick={() => {
+                          if (!videoUrl || !selectedVerse || isRendering) return;
+                          handleRender();
+                        }}
+                      >
+                        <Video className="w-6 h-6 text-gold" />
+                        <span className="text-xs font-medium uppercase tracking-widest">Gerar Vídeo para Compartilhar</span>
+                      </div>
+                      
+                      <button 
+                        onClick={handleDownloadImage}
+                        disabled={!videoUrl || !selectedVerse || isRendering}
+                        className="flex items-center justify-center gap-2 p-4 border-2 border-gold/30 text-gold rounded-xl hover:bg-gold/5 transition-all disabled:opacity-30"
+                      >
+                        <Download className="w-4 h-4" />
+                        <span className="text-xs font-bold uppercase tracking-tighter">Baixar Imagem (Alternativa Rápida)</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 gap-4">
