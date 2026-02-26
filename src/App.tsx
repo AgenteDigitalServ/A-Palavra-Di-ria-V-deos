@@ -411,7 +411,7 @@ export default function App() {
           try {
             recorder = new MediaRecorder(stream, { 
               mimeType: mimeType || undefined,
-              videoBitsPerSecond: 2500000 
+              videoBitsPerSecond: 3000000 
             });
           } catch (err) {
             throw new Error("Erro ao configurar o gravador de vídeo.");
@@ -494,7 +494,7 @@ export default function App() {
 
             if (renderVideo && canvas && ctx) {
               ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
-              ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
               ctx.fillRect(0, 0, canvas.width, canvas.height);
               ctx.fillStyle = 'white';
               ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
@@ -576,7 +576,7 @@ export default function App() {
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     
     // Overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
     // Text
