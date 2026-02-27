@@ -25,6 +25,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 import { GoogleGenAI } from "@google/genai";
+import ysFixWebmDuration from 'fix-webm-duration';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -116,6 +117,7 @@ export default function App() {
   const [selectedVerse, setSelectedVerse] = useState<Verse | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number>(0);
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -148,6 +150,12 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('ccb_favorites', JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    if (videoUrl) {
+      console.log("Novo Video URL:", videoUrl);
+    }
+  }, [videoUrl]);
 
   const handleSelectVerse = async (verse: Verse) => {
     setSelectedVerse(verse);
@@ -221,6 +229,10 @@ export default function App() {
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Reset states
+      setVideoDuration(0);
+      setVideoError(false);
+      
       // Check file size (limit to 100MB for stability on mobile)
       if (file.size > 100 * 1024 * 1024) {
         showToast('O vídeo é muito grande. Use arquivos menores que 100MB.');
@@ -256,11 +268,24 @@ export default function App() {
 
       tempVideo.onloadedmetadata = async () => {
         clearTimeout(timeoutId);
-        // Wait a bit to ensure duration is stable on some mobile browsers
-        await new Promise(r => setTimeout(r, 500));
-        const duration = tempVideo.duration;
-        console.log("Duração detectada no upload:", duration);
-        setVideoDuration(duration);
+        // Wait a bit to ensure duration is stable
+        await new Promise(r => setTimeout(r, 1000));
+        
+        let duration = tempVideo.duration;
+        
+        // Fix for Infinity/NaN duration on some mobile browsers
+        if (duration === Infinity || isNaN(duration) || duration < 0.1) {
+          console.log("Duração inválida detectada, tentando forçar leitura...");
+          tempVideo.currentTime = 1e10; // Seek to end
+          await new Promise(r => setTimeout(r, 500));
+          duration = tempVideo.duration;
+          tempVideo.currentTime = 0; // Seek back
+        }
+
+        console.log("Duração final detectada:", duration);
+        // Cap at 60s for safety, but use detected duration
+        const finalDuration = (duration > 0 && duration < 300) ? duration : 30;
+        setVideoDuration(finalDuration);
         cleanup();
         
         try {
@@ -269,6 +294,10 @@ export default function App() {
           
           setVideoFile(file);
           if (videoUrl) URL.revokeObjectURL(videoUrl);
+          
+          // Small delay to help mobile browsers manage blob memory
+          await new Promise(r => setTimeout(r, 100));
+          
           const url = URL.createObjectURL(file);
           setVideoUrl(url);
 
@@ -346,6 +375,10 @@ export default function App() {
 
   const handleRender = () => {
     if (isRendering || !selectedVerse || !videoUrl) return;
+    if (videoDuration <= 0) {
+      showToast("Aguarde a detecção da duração do vídeo...");
+      return;
+    }
     setIsRendering(true);
     setShowRenderOverlay(true);
     setRenderProgress(1); 
@@ -373,11 +406,17 @@ export default function App() {
           }
 
           renderVideo = document.createElement('video');
-          renderVideo.src = videoUrl!;
           renderVideo.muted = true;
           renderVideo.playsInline = true;
-          renderVideo.crossOrigin = "anonymous";
+          renderVideo.src = videoUrl!;
           
+          // Wait for metadata to get correct dimensions
+          await new Promise((resolve) => {
+            renderVideo!.onloadedmetadata = resolve;
+            renderVideo!.onerror = resolve;
+            renderVideo!.load();
+          });
+
           try {
             await document.fonts.ready;
           } catch (e) {}
@@ -385,8 +424,16 @@ export default function App() {
           const ctx = canvas.getContext('2d', { alpha: false });
           if (!ctx) throw new Error("Erro no motor gráfico.");
 
-          canvas.width = 1080;
-          canvas.height = 1920;
+          // Cap resolution at 1080p height for stability while maintaining aspect ratio
+          const targetHeight = 1920;
+          const originalWidth = renderVideo.videoWidth || 1080;
+          const originalHeight = renderVideo.videoHeight || 1920;
+          const aspectRatio = originalWidth / originalHeight;
+          
+          canvas.height = Math.min(originalHeight, targetHeight);
+          canvas.width = Math.round(canvas.height * aspectRatio);
+          
+          console.log("Dimensões do canvas:", canvas.width, "x", canvas.height);
 
           if (renderVideo.readyState < 3) { 
             await new Promise((resolve) => {
@@ -416,14 +463,14 @@ export default function App() {
             }
           }
           
+          // Force WebM for duration fixing reliability
           const types = [
+            'video/webm;codecs=vp8,opus',
+            'video/webm;codecs=vp9,opus',
+            'video/webm',
             'video/mp4;codecs=h264,aac',
             'video/mp4;codecs=h264',
-            'video/mp4',
-            'video/webm;codecs=vp9,opus',
-            'video/webm;codecs=vp8,opus',
-            'video/webm;codecs=h264',
-            'video/webm'
+            'video/mp4'
           ];
           const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
           
@@ -435,7 +482,7 @@ export default function App() {
           try {
             recorder = new MediaRecorder(stream, { 
               mimeType: mimeType || undefined,
-              videoBitsPerSecond: 6000000 
+              videoBitsPerSecond: 12000000 
             });
           } catch (err) {
             throw new Error("Erro ao configurar o gravador de vídeo.");
@@ -456,25 +503,37 @@ export default function App() {
               return;
             }
 
-            const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
-            setRenderedBlob(blob);
+            // Ensure the final blob has the correct mime type
+            const rawBlob = new Blob(chunks, { type: mimeType || 'video/webm' });
+            const finalDurationMs = Math.round(maxDuration * 1000);
             
-            if (currentHistoryId) {
-              const renderedId = `rendered_${currentHistoryId}`;
-              const renderedFile = new File([blob], `palavra_${Date.now()}.mp4`, { type: mimeType || 'video/webm' });
-              await saveVideoToDB(renderedId, renderedFile);
-              setHistory(prev => prev.map(h => 
-                h.id === currentHistoryId ? { ...h, renderedVideoId: renderedId } : h
-              ));
-            }
+            console.log("Iniciando correção de duração para:", finalDurationMs, "ms");
 
-            setIsRendering(false);
-            setRenderProgress(0);
+            // Fix WebM duration metadata
+            ysFixWebmDuration(rawBlob, finalDurationMs, async (fixedBlob) => {
+              console.log("Blob fixado:", fixedBlob.size, "bytes", "Tipo:", fixedBlob.type);
+              setRenderedBlob(fixedBlob);
+              
+              if (currentHistoryId) {
+                const renderedId = `rendered_${currentHistoryId}`;
+                const renderedFile = new File([fixedBlob], `palavra_${Date.now()}.mp4`, { type: fixedBlob.type });
+                await saveVideoToDB(renderedId, renderedFile);
+                setHistory(prev => prev.map(h => 
+                  h.id === currentHistoryId ? { ...h, renderedVideoId: renderedId } : h
+                ));
+              }
+
+              setIsRendering(false);
+              setRenderProgress(0);
+            });
           };
 
-          const fontSize = 64;
+          // Adjust font sizes based on resolution (scaling from 1080p base)
+          const scaleFactor = canvas.width / 1080;
+          const fontSize = Math.round(64 * scaleFactor);
+          const refFontSize = Math.round(48 * scaleFactor);
           const lineHeight = fontSize * 1.3;
-          const maxWidth = canvas.width - 200;
+          const maxWidth = canvas.width - (200 * scaleFactor);
           ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
@@ -518,17 +577,18 @@ export default function App() {
               return;
             }
 
-            if (renderVideo && canvas && ctx) {
+            // Draw frame
+            if (renderVideo && canvas && ctx && renderVideo.readyState >= 2) {
               ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
               ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
               ctx.fillRect(0, 0, canvas.width, canvas.height);
 
               // Draw Logo
               if (logoImg && logoImg.complete) {
-                const logoSize = 180;
-                const padding = 60;
+                const logoSize = Math.round(180 * scaleFactor);
+                const padding = Math.round(60 * scaleFactor);
                 ctx.shadowColor = 'rgba(0,0,0,0.5)';
-                ctx.shadowBlur = 15;
+                ctx.shadowBlur = 15 * scaleFactor;
                 ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, padding, logoSize, logoSize);
                 ctx.shadowBlur = 0;
               }
@@ -536,7 +596,7 @@ export default function App() {
               ctx.fillStyle = 'white';
               ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
               ctx.shadowColor = 'rgba(0,0,0,0.8)';
-              ctx.shadowBlur = 6; 
+              ctx.shadowBlur = 6 * scaleFactor; 
               let currentY = startY;
               lines.forEach((l) => {
                 ctx.fillText(`"${l}"`, canvas.width / 2, currentY + lineHeight / 2);
@@ -544,49 +604,52 @@ export default function App() {
               });
               ctx.shadowBlur = 0;
               ctx.fillStyle = '#D4AF37';
-              ctx.font = 'bold 48px "Cinzel"';
-              ctx.fillText(referenceText, canvas.width / 2, currentY + 80);
+              ctx.font = `bold ${refFontSize}px "Cinzel"`;
+              ctx.fillText(referenceText, canvas.width / 2, currentY + (80 * scaleFactor));
               const refWidth = ctx.measureText(referenceText).width;
               ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
-              ctx.lineWidth = 6;
-              const lineY = currentY + 80;
+              ctx.lineWidth = 6 * scaleFactor;
+              const lineY = currentY + (80 * scaleFactor);
               const centerX = canvas.width / 2;
-              const offset = refWidth / 2 + 30;
+              const offset = refWidth / 2 + (30 * scaleFactor);
               ctx.beginPath();
-              ctx.moveTo(centerX - offset - 60, lineY);
+              ctx.moveTo(centerX - offset - (60 * scaleFactor), lineY);
               ctx.lineTo(centerX - offset, lineY);
               ctx.moveTo(centerX + offset, lineY);
-              ctx.lineTo(centerX + offset + 60, lineY);
+              ctx.lineTo(centerX + offset + (60 * scaleFactor), lineY);
               ctx.stroke();
             }
 
             framesDrawn++;
-            if (framesDrawn === 10 && recorder.state === 'inactive') {
+            if (framesDrawn === 5 && recorder.state === 'inactive') {
               renderStartTime = Date.now();
-              recorder.start(1000);
+              recorder.start(); // Start without slice to get a single continuous stream
             }
 
             if (renderStartTime > 0) {
               const now = Date.now();
               const elapsedSeconds = (now - renderStartTime) / 1000;
-              if (now - lastCheckTime > 2000) {
-                if (renderVideo!.currentTime === lastVideoTime && elapsedSeconds < maxDuration) {
-                  renderVideo!.play().catch(() => {});
-                  renderVideo!.currentTime += 0.1;
-                }
-                lastVideoTime = renderVideo!.currentTime;
-                lastCheckTime = now;
+              
+              // Keep video playing
+              if (renderVideo.paused && elapsedSeconds < maxDuration) {
+                renderVideo.play().catch(() => {});
               }
+
               if (elapsedSeconds >= maxDuration) {
-                setTimeout(() => {
-                  if (recorder && recorder.state !== 'inactive') recorder.stop();
-                }, 500);
+                console.log("Rendering finished. Stopping recorder...");
+                if (recorder && recorder.state !== 'inactive') {
+                  recorder.stop();
+                }
                 return;
               }
               const progress = Math.max(1, Math.min((elapsedSeconds / maxDuration) * 100, 100));
               setRenderProgress(Math.round(progress));
             }
-            requestAnimationFrame(renderLoop);
+            
+            // Use a fixed frame rate for the loop to ensure consistency
+            setTimeout(() => {
+              requestAnimationFrame(renderLoop);
+            }, 1000 / 30);
           };
           renderLoop();
         } catch (error: any) {
@@ -1064,6 +1127,7 @@ export default function App() {
               {videoUrl ? (
                 <>
                   <video 
+                    key={videoUrl}
                     ref={videoRef}
                     src={videoUrl} 
                     className="w-full h-full object-cover pointer-events-none"
@@ -1073,8 +1137,31 @@ export default function App() {
                     autoPlay
                     playsInline
                     webkit-playsinline="true"
-                    crossOrigin="anonymous"
+                    preload="auto"
+                    onLoadedData={() => setVideoError(false)}
+                    onError={(e) => {
+                      console.error("Erro no elemento de vídeo:", e);
+                      setVideoError(true);
+                    }}
                   />
+                  
+                  {videoError && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-navy/90 p-6 text-center z-50">
+                      <Video className="w-12 h-12 text-gold/50 mb-4" />
+                      <p className="text-white font-bold mb-4">Erro ao carregar o vídeo</p>
+                      <button 
+                        onClick={() => {
+                          if (videoRef.current) {
+                            setVideoError(false);
+                            videoRef.current.load();
+                          }
+                        }}
+                        className="px-6 py-2 bg-gold text-navy font-bold rounded-full hover:bg-white transition-colors"
+                      >
+                        Tentar Recarregar
+                      </button>
+                    </div>
+                  )}
                   
                   {/* Overlay Text */}
                   <AnimatePresence>
@@ -1179,6 +1266,14 @@ export default function App() {
                   </label>
                 ) : !renderedBlob ? (
                   <div className="flex flex-col gap-3">
+                    {videoDuration > 0 && (
+                      <div className="flex items-center justify-center gap-2 py-1 px-3 bg-gold/20 rounded-full self-center">
+                        <div className="w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+                        <span className="text-[10px] font-bold text-gold uppercase tracking-widest">
+                          Duração: {videoDuration.toFixed(1)}s
+                        </span>
+                      </div>
+                    )}
                     {!selectedVerse && (
                       <div className="p-3 bg-gold/10 border border-gold/30 rounded-xl text-center">
                         <p className="text-[10px] text-navy/70 uppercase font-bold tracking-wider">
