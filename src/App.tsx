@@ -423,11 +423,14 @@ export default function App() {
 
           const ctx = canvas.getContext('2d', { alpha: false });
           if (!ctx) throw new Error("Erro no motor gráfico.");
+          
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
 
-          // Cap resolution at 1080p height for stability while maintaining aspect ratio
-          const targetHeight = 1920;
-          const originalWidth = renderVideo.videoWidth || 1080;
-          const originalHeight = renderVideo.videoHeight || 1920;
+          // Cap resolution at 720p height for better performance on mobile
+          const targetHeight = 1280;
+          const originalWidth = renderVideo.videoWidth || 720;
+          const originalHeight = renderVideo.videoHeight || 1280;
           const aspectRatio = originalWidth / originalHeight;
           
           canvas.height = Math.min(originalHeight, targetHeight);
@@ -454,10 +457,11 @@ export default function App() {
 
           let stream: MediaStream;
           try {
+            // Force 30fps for consistent playback speed
             stream = canvas.captureStream(30);
           } catch (e) {
             try {
-              stream = (canvas as any).captureStream();
+              stream = (canvas as any).captureStream(30);
             } catch (e2) {
               throw new Error("Seu dispositivo não suporta gravação de vídeo.");
             }
@@ -482,7 +486,7 @@ export default function App() {
           try {
             recorder = new MediaRecorder(stream, { 
               mimeType: mimeType || undefined,
-              videoBitsPerSecond: 12000000 
+              videoBitsPerSecond: 6000000 
             });
           } catch (err) {
             throw new Error("Erro ao configurar o gravador de vídeo.");
@@ -571,85 +575,127 @@ export default function App() {
           let lastVideoTime = -1;
           let lastCheckTime = Date.now();
 
+          const fps = 30;
+          const frameInterval = 1000 / fps;
+          let lastFrameTime = Date.now();
+
           const renderLoop = () => {
-            if (!isRendering) {
+            if (!isRendering || !canvas || !ctx || !renderVideo) {
               if (recorder && recorder.state !== 'inactive') recorder.stop();
               return;
             }
 
-            // Draw frame
-            if (renderVideo && canvas && ctx && renderVideo.readyState >= 2) {
-              ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
-              ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const now = Date.now();
+            const elapsed = now - lastFrameTime;
 
-              // Draw Logo
-              if (logoImg && logoImg.complete) {
-                const logoSize = Math.round(180 * scaleFactor);
-                const padding = Math.round(60 * scaleFactor);
-                ctx.shadowColor = 'rgba(0,0,0,0.5)';
-                ctx.shadowBlur = 15 * scaleFactor;
-                ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, padding, logoSize, logoSize);
-                ctx.shadowBlur = 0;
-              }
+            if (elapsed >= frameInterval) {
+              lastFrameTime = now - (elapsed % frameInterval);
 
-              ctx.fillStyle = 'white';
-              ctx.font = `italic ${fontSize}px "Libre Baskerville"`;
-              ctx.shadowColor = 'rgba(0,0,0,0.8)';
-              ctx.shadowBlur = 6 * scaleFactor; 
-              let currentY = startY;
-              lines.forEach((l) => {
-                ctx.fillText(`"${l}"`, canvas.width / 2, currentY + lineHeight / 2);
-                currentY += lineHeight;
-              });
-              ctx.shadowBlur = 0;
-              ctx.fillStyle = '#D4AF37';
-              ctx.font = `bold ${refFontSize}px "Cinzel"`;
-              ctx.fillText(referenceText, canvas.width / 2, currentY + (80 * scaleFactor));
-              const refWidth = ctx.measureText(referenceText).width;
-              ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
-              ctx.lineWidth = 6 * scaleFactor;
-              const lineY = currentY + (80 * scaleFactor);
-              const centerX = canvas.width / 2;
-              const offset = refWidth / 2 + (30 * scaleFactor);
-              ctx.beginPath();
-              ctx.moveTo(centerX - offset - (60 * scaleFactor), lineY);
-              ctx.lineTo(centerX - offset, lineY);
-              ctx.moveTo(centerX + offset, lineY);
-              ctx.lineTo(centerX + offset + (60 * scaleFactor), lineY);
-              ctx.stroke();
-            }
+              // Draw frame only if video is ready
+              if (renderVideo.readyState >= 2) {
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(renderVideo, 0, 0, canvas.width, canvas.height);
+                
+                // Overlay darkness
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            framesDrawn++;
-            if (framesDrawn === 5 && recorder.state === 'inactive') {
-              renderStartTime = Date.now();
-              recorder.start(); // Start without slice to get a single continuous stream
-            }
-
-            if (renderStartTime > 0) {
-              const now = Date.now();
-              const elapsedSeconds = (now - renderStartTime) / 1000;
-              
-              // Keep video playing
-              if (renderVideo.paused && elapsedSeconds < maxDuration) {
-                renderVideo.play().catch(() => {});
-              }
-
-              if (elapsedSeconds >= maxDuration) {
-                console.log("Rendering finished. Stopping recorder...");
-                if (recorder && recorder.state !== 'inactive') {
-                  recorder.stop();
+                // Draw Logo
+                if (logoImg && logoImg.complete) {
+                  const logoSize = Math.round(180 * scaleFactor);
+                  const padding = Math.round(60 * scaleFactor);
+                  
+                  // Simple shadow for logo (much faster than shadowBlur)
+                  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                  ctx.beginPath();
+                  ctx.arc(canvas.width / 2, padding + logoSize / 2 + 4, logoSize / 2, 0, Math.PI * 2);
+                  ctx.fill();
+                  
+                  ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, padding, logoSize, logoSize);
                 }
-                return;
+
+                // Text Settings
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                // Verse Text
+                const verseFont = `italic ${fontSize}px "Libre Baskerville"`;
+                ctx.font = verseFont;
+                let currentY = startY;
+                
+                lines.forEach((l) => {
+                  const text = `"${l}"`;
+                  const x = canvas.width / 2;
+                  const y = currentY + lineHeight / 2;
+                  
+                  // Manual Drop Shadow (High Performance)
+                  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+                  ctx.fillText(text, x + 2, y + 2);
+                  
+                  ctx.fillStyle = 'white';
+                  ctx.fillText(text, x, y);
+                  currentY += lineHeight;
+                });
+
+                // Reference Text
+                ctx.fillStyle = '#D4AF37';
+                const refFont = `bold ${refFontSize}px "Cinzel"`;
+                ctx.font = refFont;
+                const refY = currentY + (80 * scaleFactor);
+                const refX = canvas.width / 2;
+                
+                // Manual Drop Shadow for Reference
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillText(referenceText, refX + 1, refY + 1);
+                
+                ctx.fillStyle = '#D4AF37';
+                ctx.fillText(referenceText, refX, refY);
+
+                // Decorative Lines
+                const refWidth = ctx.measureText(referenceText).width;
+                ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
+                ctx.lineWidth = Math.max(2, 6 * scaleFactor);
+                const offset = refWidth / 2 + (30 * scaleFactor);
+                const lineLength = 60 * scaleFactor;
+                
+                ctx.beginPath();
+                ctx.moveTo(canvas.width / 2 - offset - lineLength, refY);
+                ctx.lineTo(canvas.width / 2 - offset, refY);
+                ctx.moveTo(canvas.width / 2 + offset, refY);
+                ctx.lineTo(canvas.width / 2 + offset + lineLength, refY);
+                ctx.stroke();
               }
-              const progress = Math.max(1, Math.min((elapsedSeconds / maxDuration) * 100, 100));
-              setRenderProgress(Math.round(progress));
+
+              framesDrawn++;
+              // Start recording after a few frames to ensure stability
+              if (framesDrawn === 10 && recorder.state === 'inactive') {
+                renderStartTime = Date.now();
+                recorder.start();
+              }
+
+              if (renderStartTime > 0) {
+                const nowRender = Date.now();
+                const elapsedSeconds = (nowRender - renderStartTime) / 1000;
+                
+                // Ensure video keeps playing
+                if (renderVideo.paused && elapsedSeconds < maxDuration) {
+                  renderVideo.play().catch(() => {});
+                }
+
+                if (elapsedSeconds >= maxDuration) {
+                  if (recorder && recorder.state !== 'inactive') {
+                    recorder.stop();
+                  }
+                  return;
+                }
+                
+                const progress = Math.max(1, Math.min((elapsedSeconds / maxDuration) * 100, 100));
+                setRenderProgress(Math.round(progress));
+              }
             }
             
-            // Use a fixed frame rate for the loop to ensure consistency
-            setTimeout(() => {
-              requestAnimationFrame(renderLoop);
-            }, 1000 / 30);
+            requestAnimationFrame(renderLoop);
           };
           renderLoop();
         } catch (error: any) {
